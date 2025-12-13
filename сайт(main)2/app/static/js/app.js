@@ -1,0 +1,1253 @@
+import { initializeAuth, getCurrentUser, logout, isAdmin, getAllUsers, setCurrentUser, createUser, loginWithPassword } from './auth.js';
+import { showNotification } from './notifications.js';
+
+class SoveshaikaApp {
+  constructor() {
+    this.currentUser = null;
+    this.rooms = [];
+    this.users = [];
+    this.init();
+  }
+
+  async init() {
+    await initializeAuth();
+    this.currentUser = getCurrentUser();
+    this.users = getAllUsers();
+    this.setupEventListeners();
+    this.bindEvents();
+    this.checkAuth();
+
+    if (this.currentUser) {
+      this.updateUserDisplay();
+      await this.loadRooms();
+    } else {
+      this.showAuthView();
+    }
+  }
+
+  setupEventListeners() {
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const view = e.target.dataset.view;
+        this.switchView(view);
+      });
+    });
+
+    document.querySelector('.logout-btn').addEventListener('click', () => {
+      this.logout();
+    });
+
+    document.querySelector('.user-name').addEventListener('click', () => {
+      this.switchView('profile');
+    });
+  }
+
+  async loadRooms() {
+    try {
+      const response = await fetch('/api/rooms/');
+      if (response.ok) {
+        this.rooms = await response.json();
+      }
+    } catch (error) {
+      console.error('Error loading rooms:', error);
+      this.rooms = [];
+    }
+  }
+
+  showAuthView() {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('auth').classList.add('active');
+    this.loadAuthUsersList();
+  }
+
+  showNotification(message, type = 'info') {
+    console.log(`🔔 ${type.toUpperCase()}: ${message}`);
+    
+    const container = document.getElementById('notifications');
+    if (!container) {
+        console.error('❌ Контейнер уведомлений не найден');
+        return;
+    }
+    
+    const notification = document.createElement('div');
+    notification.className = `notification ${type}`;
+    notification.textContent = message;
+    
+    container.appendChild(notification);
+    
+    // Автоматическое удаление через 3 секунды
+    setTimeout(() => {
+        notification.style.animation = 'slideOut 0.3s ease-in forwards';
+        setTimeout(() => notification.remove(), 300);
+    }, 3000);
+}
+
+  loadAuthUsersList() {
+    const list = document.getElementById('authUsersList');
+    const users = this.users;
+    list.innerHTML = '';
+
+    users.forEach(user => {
+      const button = document.createElement('button');
+      button.className = 'auth-user-btn';
+      button.innerHTML = `
+        <div class="auth-user-info">
+          <div class="auth-user-name">${user.name}</div>
+          <div class="auth-user-email">${user.email}</div>
+          <div class="auth-user-role">${this.getRoleLabel(user.role)}</div>
+        </div>
+      `;
+      button.addEventListener('click', () => {
+        this.loginUser(user.email, 'password123');
+      });
+      list.appendChild(button);
+    });
+  }
+
+  async loadRoomsForAdmin() {
+    console.log("🏢 Загрузка комнат для админ-панели...");
+    try {
+        const response = await fetch('/api/rooms/');
+        if (response.ok) {
+            this.rooms = await response.json();
+            this.renderRoomsList();
+        } else {
+            this.showNotification('Ошибка загрузки комнат', 'error');
+        }
+    } catch (error) {
+        console.error('Error loading rooms:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+
+renderRoomsList() {
+    const container = document.getElementById('roomsList');
+    if (!container) {
+        console.error('❌ Элемент roomsList не найден');
+        return;
+    }
+
+    console.log(`🏢 Отрисовка ${this.rooms.length} комнат для админки`);
+    container.innerHTML = '';
+    
+    if (this.rooms.length === 0) {
+        container.innerHTML = '<p class="text-muted">Нет комнат</p>';
+        return;
+    }
+
+    this.rooms.forEach(room => {
+        const roomElement = document.createElement('div');
+        roomElement.className = 'list-item';
+        roomElement.innerHTML = `
+            <div class="item-info">
+                <h4>${room.name}</h4>
+                <p>
+                    👥 ${room.capacity} чел. • 
+                    💰 ${room.price} руб/час
+                </p>
+                <p><small>${room.amenities || 'Нет оборудования'}</small></p>
+            </div>
+            <div class="item-actions">
+                <button class="btn btn-danger btn-small" onclick="window.app.deleteRoom('${room.id}')">
+                    Удалить
+                </button>
+            </div>
+        `;
+        container.appendChild(roomElement);
+    });
+}
+updateDashboard() {
+    console.log("📊 Обновление dashboard...");
+    this.renderRoomsGrid();
+}
+
+renderRoomsGrid() {
+    const container = document.getElementById('roomsGrid');
+    if (!container) {
+        console.error('❌ Элемент roomsGrid не найден');
+        return;
+    }
+
+    console.log(`🏢 Отрисовка ${this.rooms.length} комнат`);
+    container.innerHTML = '';
+    
+    if (this.rooms.length === 0) {
+        container.innerHTML = '<p class="text-muted">Комнаты не найдены</p>';
+        return;
+    }
+
+    const today = new Date().toISOString().split('T')[0];
+    const bookings = this.bookings || [];
+    
+    this.rooms.forEach(room => {
+        // Получаем бронирования для этой комнаты на сегодня
+        const roomBookings = bookings.filter(b => 
+            b && b.roomId === room.id && b.date === today
+        );
+
+        // Определяем статус комнаты
+        const now = new Date();
+        const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+        
+        let isBusy = false;
+        roomBookings.forEach(booking => {
+            if (currentTime >= booking.startTime && currentTime < booking.endTime) {
+                isBusy = true;
+            }
+        });
+
+        const roomElement = document.createElement('div');
+        roomElement.className = 'room-card';
+        roomElement.innerHTML = `
+            <div class="room-header">
+                <h3 class="room-name">${room.name}</h3>
+                <span class="room-status ${isBusy ? 'status-busy' : 'status-free'}">
+                    ${isBusy ? 'Занята' : 'Свободна'}
+                </span>
+            </div>
+            
+            <div class="room-details">
+                <div class="detail-item">
+                    <img src="/icons/people.png" alt="Вместимость" class="detail-icon">
+                    <span>${room.capacity} чел.</span>
+                </div>
+                <div class="detail-item">
+                    <img src="/icons/money.png" alt="Цена" class="detail-icon">
+                    <span>${room.price} руб/час</span>
+                </div>
+                <div class="detail-item">
+                    <img src="/icons/calendar.png" alt="Бронирования" class="detail-icon">
+                    <span>${roomBookings.length} бронирований</span>
+                </div>
+            </div>
+            
+            ${room.amenities ? `<p class="room-amenities"><small>${room.amenities}</small></p>` : ''}
+            
+            <div class="time-slots">
+                ${this.renderTimeSlots(roomBookings)}
+            </div>
+            
+            <button class="btn btn-primary" onclick="window.app.bookRoom('${room.id}')" 
+                    style="width: 100%; margin-top: 1rem;">
+                Забронировать
+            </button>
+        `;
+
+        container.appendChild(roomElement);
+    });
+}
+updateBookingForm() {
+    console.log("📝 Обновление формы бронирования...");
+    
+    const roomSelect = document.getElementById('roomSelect');
+    if (!roomSelect) {
+        console.error('❌ Элемент roomSelect не найден');
+        return;
+    }
+    
+    // Очищаем и заполняем список комнат
+    roomSelect.innerHTML = '<option value="">-- Выберите комнату --</option>';
+    this.rooms.forEach(room => {
+        const option = document.createElement('option');
+        option.value = room.id;
+        option.textContent = `${room.name} (${room.capacity} чел.)`;
+        roomSelect.appendChild(option);
+    });
+    
+    // Устанавливаем сегодняшнюю дату по умолчанию
+    const today = new Date().toISOString().split('T')[0];
+    const dateInput = document.getElementById('bookingDate');
+    if (dateInput) {
+        dateInput.value = today;
+        dateInput.min = today;
+    }
+    
+    // Заполняем времена
+    this.fillTimeSelect('startTime');
+    this.fillTimeSelect('endTime');
+}
+
+fillTimeSelect(selectId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">-- Выберите время --</option>';
+    this.timeSlots.forEach(slot => {
+        const option = document.createElement('option');
+        option.value = slot.time;
+        option.textContent = slot.display;
+        select.appendChild(option);
+    });
+}
+async deleteRoom(roomId) {
+    if (!confirm('Вы уверены, что хотите удалить эту комнату?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/rooms/${roomId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            this.showNotification('Комната удалена', 'success');
+            await this.loadRoomsForAdmin();
+        } else {
+            const error = await response.json();
+            this.showNotification(error.detail || 'Ошибка удаления комнаты', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting room:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+bookRoom(roomId) {
+    console.log(`📅 Бронирование комнаты: ${roomId}`);
+    this.switchView('booking');
+    
+    // Устанавливаем выбранную комнату
+    const roomSelect = document.getElementById('roomSelect');
+    if (roomSelect) {
+        const room = this.rooms.find(r => r.id === roomId);
+        if (room) {
+            roomSelect.value = roomId;
+            this.updateTimeSlots();
+        }
+    }
+}
+
+  async loadAuthUsers() {
+    try {
+        console.log("👥 Загрузка пользователей для авторизации...");
+        const response = await fetch('/api/users/');
+        if (response.ok) {
+            this.users = await response.json();
+            console.log(`✅ Загружено ${this.users.length} пользователей`);
+            return this.users;
+        } else {
+            console.error('❌ Ошибка загрузки пользователей:', response.status);
+            this.users = [];
+            return [];
+        }
+    } catch (error) {
+        console.error('❌ Ошибка сети при загрузке пользователей:', error);
+        this.users = [];
+        return [];
+    }
+}
+async loadAccessList() {
+    console.log("👥 Загрузка списка пользователей для управления доступом...");
+    try {
+        const response = await fetch('/api/users/');
+        if (response.ok) {
+            this.users = await response.json();
+            this.renderAccessList();
+        } else {
+            this.showNotification('Ошибка загрузки пользователей', 'error');
+        }
+    } catch (error) {
+        console.error('Error loading users:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+
+renderAccessList() {
+    const container = document.getElementById('accessList');
+    if (!container) {
+        console.error('❌ Элемент accessList не найден');
+        return;
+    }
+
+    console.log(`👥 Отрисовка ${this.users.length} пользователей для управления доступом`);
+    container.innerHTML = '';
+    
+    if (this.users.length === 0) {
+        container.innerHTML = '<p class="text-muted">Нет пользователей</p>';
+        return;
+    }
+
+    this.users.forEach(user => {
+        const userElement = document.createElement('div');
+        userElement.className = 'list-item';
+        userElement.innerHTML = `
+            <div class="item-info">
+                <h4>${user.name}</h4>
+                <p>${user.email}</p>
+                <p><small>Текущая роль: <strong>${this.getRoleLabel(user.role)}</strong></small></p>
+            </div>
+            <div class="item-actions">
+                <select class="form-control" style="width: 150px;" 
+                        onchange="window.app.updateUserRole('${user.id}', this.value)">
+                    <option value="user" ${user.role === 'user' ? 'selected' : ''}>Пользователь</option>
+                    <option value="manager" ${user.role === 'manager' ? 'selected' : ''}>Менеджер</option>
+                    <option value="admin" ${user.role === 'admin' ? 'selected' : ''}>Администратор</option>
+                </select>
+            </div>
+        `;
+        container.appendChild(userElement);
+    });
+}
+
+async updateUserRole(userId, role) {
+    console.log(`🔄 Обновление роли пользователя ${userId} на ${role}`);
+    
+    try {
+        const response = await fetch(`/api/users/${userId}/role`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ role: role })
+        });
+
+        if (response.ok) {
+            const user = await response.json();
+            this.showNotification(`Роль пользователя ${user.name} обновлена на ${this.getRoleLabel(role)}`, 'success');
+            
+            // Обновляем список
+            await this.loadAccessList();
+        } else {
+            const error = await response.json();
+            this.showNotification(error.detail || 'Ошибка обновления роли', 'error');
+        }
+    } catch (error) {
+        console.error('Error updating role:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+
+async loadAllBookings() {
+    console.log("📅 Загрузка всех бронирований...");
+    try {
+        const response = await fetch('/api/bookings/');
+        if (response.ok) {
+            this.bookings = await response.json();
+            this.renderAllBookings();
+        } else {
+            this.showNotification('Ошибка загрузки бронирований', 'error');
+        }
+    } catch (error) {
+        console.error('Error loading bookings:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+
+renderAllBookings() {
+    const container = document.getElementById('bookingsList');
+    if (!container) {
+        console.error('❌ Элемент bookingsList не найден');
+        return;
+    }
+
+    console.log(`📅 Отрисовка ${this.bookings.length} бронирований`);
+    container.innerHTML = '';
+    
+    if (this.bookings.length === 0) {
+        container.innerHTML = '<p class="text-muted">Нет бронирований</p>';
+        return;
+    }
+
+    this.bookings.forEach(booking => {
+        // Находим комнату
+        const room = this.rooms.find(r => r.id === booking.roomId);
+        const roomName = room ? room.name : 'Неизвестная комната';
+        
+        // Находим пользователя
+        const user = this.users.find(u => u.id === booking.userId);
+        const userName = user ? user.name : 'Неизвестный пользователь';
+        
+        const bookingElement = document.createElement('div');
+        bookingElement.className = 'list-item';
+        bookingElement.innerHTML = `
+            <div class="item-info">
+                <h4>${booking.title}</h4>
+                <p>${roomName} • ${userName}</p>
+                <p>
+                    <small>
+                        📅 ${booking.date} • 
+                        ⏰ ${booking.startTime}-${booking.endTime}
+                    </small>
+                </p>
+                ${booking.participants && booking.participants.length > 0 ? 
+                    `<p><small>👥 Участники: ${booking.participants.join(', ')}</small></p>` : ''}
+            </div>
+            <div class="item-actions">
+                <button class="btn btn-danger btn-small" onclick="window.app.deleteBooking('${booking.id}')">
+                    Отменить
+                </button>
+            </div>
+        `;
+        container.appendChild(bookingElement);
+    });
+}
+
+async deleteBooking(bookingId) {
+    if (!confirm('Вы уверены, что хотите отменить это бронирование?')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`/api/bookings/${bookingId}`, {
+            method: 'DELETE'
+        });
+
+        if (response.ok) {
+            this.showNotification('Бронирование отменено', 'success');
+            await this.loadAllBookings();
+        } else {
+            const error = await response.json();
+            this.showNotification(error.detail || 'Ошибка отмены бронирования', 'error');
+        }
+    } catch (error) {
+        console.error('Error deleting booking:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+bindEvents() {
+    console.log("🔗 Привязка обработчиков событий...");
+    
+    // Навигация
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const view = e.target.dataset.view;
+            this.switchView(view);
+        });
+    });
+
+    // Выход
+    document.querySelector('.logout-btn').addEventListener('click', () => {
+        this.logout();
+    });
+
+    // Клик по имени пользователя
+    document.querySelector('.user-name').addEventListener('click', () => {
+        this.switchView('profile');
+    });
+
+    // Фильтры
+    document.getElementById('filterToggle')?.addEventListener('click', () => {
+        const panel = document.getElementById('filterPanel');
+        panel.classList.toggle('active');
+    });
+
+    document.getElementById('applyFilters')?.addEventListener('click', () => {
+        this.applyFilters();
+    });
+
+    document.getElementById('resetFilters')?.addEventListener('click', () => {
+        this.resetFilters();
+    });
+
+    // Бронирование
+    document.getElementById('confirmBooking')?.addEventListener('click', () => {
+        this.createBooking();
+    });
+
+    // Админка - вкладки
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const tab = e.target.dataset.tab;
+            this.switchTab(tab);
+        });
+    });
+
+    // Админка - добавление комнаты
+    document.getElementById('addRoomBtn')?.addEventListener('click', () => {
+        this.addRoom();
+    });
+
+    // Админка - обновление прав доступа
+    document.getElementById('updateAccessBtn')?.addEventListener('click', () => {
+        this.updateAccess();
+    });
+
+    // Обновление времени при выборе даты
+    document.getElementById('bookingDate')?.addEventListener('change', () => {
+        this.updateTimeSlots();
+    });
+
+    document.getElementById('roomSelect')?.addEventListener('change', () => {
+        this.updateTimeSlots();
+    });
+}
+async createBooking() {
+    if (!this.currentUser) {
+        this.showNotification('Необходимо войти в систему', 'error');
+        this.switchView('auth');
+        return;
+    }
+
+    const roomId = document.getElementById('roomSelect').value;
+    const date = document.getElementById('bookingDate').value;
+    const startTime = document.getElementById('startTime').value;
+    const endTime = document.getElementById('endTime').value;
+    const title = document.getElementById('meetingTitle').value;
+    const participants = document.getElementById('participants').value;
+
+    if (!roomId || !date || !startTime || !endTime || !title) {
+        this.showNotification('Заполните все обязательные поля', 'error');
+        return;
+    }
+
+    if (startTime >= endTime) {
+        this.showNotification('Время окончания должно быть позже времени начала', 'error');
+        return;
+    }
+
+    try {
+        const response = await fetch('/api/bookings/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                room_id: roomId,
+                user_id: this.currentUser.id,
+                date: date,
+                start_time: startTime,
+                end_time: endTime,
+                title: title,
+                participants: participants || ''
+            })
+        });
+
+        if (response.ok) {
+            const booking = await response.json();
+            const roomName = this.rooms.find(r => r.id === roomId)?.name || 'Переговорная';
+            this.showNotification(`"${roomName}" успешно забронирована на ${date} с ${startTime} до ${endTime}`, 'success');
+
+            // Очищаем форму
+            document.getElementById('meetingTitle').value = '';
+            document.getElementById('participants').value = '';
+            
+            // Переключаемся на расписание
+            this.switchView('dashboard');
+        } else {
+            const error = await response.json();
+            this.showNotification(error.detail || 'Ошибка бронирования', 'error');
+        }
+    } catch (error) {
+        console.error('Ошибка сети при бронировании:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+async updateAccess() {
+    console.log("🔑 Обновление прав доступа через форму...");
+    
+    const email = document.getElementById('userEmail')?.value;
+    const role = document.getElementById('userRole')?.value;
+
+    if (!email) {
+        this.showNotification('Введите email пользователя', 'error');
+        return;
+    }
+
+    // Находим пользователя по email
+    const user = this.users.find(u => u.email === email);
+    if (!user) {
+        this.showNotification('Пользователь с таким email не найден', 'error');
+        return;
+    }
+
+    await this.updateUserRole(user.id, role);
+    
+    // Очищаем форму
+    document.getElementById('userEmail').value = '';
+}
+applyFilters() {
+    console.log("🔍 Применение фильтров...");
+    // Пока просто закрываем панель фильтров
+    document.getElementById('filterPanel').classList.remove('active');
+    this.showNotification('Фильтры применены', 'success');
+}
+
+resetFilters() {
+    console.log("🔄 Сброс фильтров...");
+    // Сбрасываем все чекбоксы
+    document.querySelectorAll('input[type="checkbox"]').forEach(checkbox => {
+        checkbox.checked = true;
+    });
+    // Сбрасываем дату на сегодня
+    const today = new Date().toISOString().split('T')[0];
+    const dateInput = document.getElementById('filterDate');
+    if (dateInput) {
+        dateInput.value = today;
+    }
+    // Сбрасываем поле оборудования
+    document.getElementById('filterAmenities').value = '';
+    this.showNotification('Фильтры сброшены', 'info');
+}
+async updateTimeSlots() {
+    const roomId = document.getElementById('roomSelect')?.value;
+    const date = document.getElementById('bookingDate')?.value;
+    
+    if (!roomId || !date) {
+        this.clearTimeSlots();
+        return;
+    }
+    
+    try {
+        // Загружаем бронирования для выбранной комнаты и даты
+        const response = await fetch(`/api/bookings/?room_id=${roomId}&booking_date=${date}`);
+        if (response.ok) {
+            const bookings = await response.json();
+            this.renderAvailableTimeSlots(bookings);
+        } else {
+            console.error('Ошибка загрузки временных слотов:', response.status);
+            this.clearTimeSlots();
+        }
+    } catch (error) {
+        console.error('Error loading time slots:', error);
+        this.clearTimeSlots();
+    }
+}
+
+clearTimeSlots() {
+    const container = document.getElementById('availabilityGrid');
+    if (container) {
+        container.innerHTML = '';
+    }
+}
+
+renderAvailableTimeSlots(bookings) {
+    const container = document.getElementById('availabilityGrid');
+    if (!container) return;
+    
+    container.innerHTML = '<h3>Доступные слоты:</h3>';
+    
+    if (bookings.length === 0) {
+        container.innerHTML += '<p class="text-muted">Свободно весь день</p>';
+        return;
+    }
+    
+    const bookedSlots = new Set();
+    bookings.forEach(booking => {
+        // Добавляем все слоты между началом и концом бронирования
+        const start = this.timeToMinutes(booking.startTime);
+        const end = this.timeToMinutes(booking.endTime);
+        
+        for (let time = start; time < end; time += 30) {
+            const timeStr = this.minutesToTime(time);
+            bookedSlots.add(timeStr);
+        }
+    });
+    
+    const availableSlots = this.timeSlots.filter(slot => !bookedSlots.has(slot.time));
+    
+    if (availableSlots.length === 0) {
+        container.innerHTML += '<p class="text-muted">Нет доступных слотов на выбранную дату</p>';
+        return;
+    }
+    
+    const slotsGrid = document.createElement('div');
+    slotsGrid.className = 'slots-grid';
+    slotsGrid.style.display = 'grid';
+    slotsGrid.style.gridTemplateColumns = 'repeat(auto-fill, minmax(120px, 1fr))';
+    slotsGrid.style.gap = '0.5rem';
+    slotsGrid.style.marginTop = '1rem';
+    
+    availableSlots.forEach(slot => {
+        const slotBtn = document.createElement('button');
+        slotBtn.className = 'btn btn-secondary';
+        slotBtn.textContent = slot.display;
+        slotBtn.style.fontSize = '0.875rem';
+        slotBtn.style.padding = '0.5rem';
+        slotBtn.addEventListener('click', () => {
+            this.selectTimeSlot(slot.time);
+        });
+        slotsGrid.appendChild(slotBtn);
+    });
+    
+    container.appendChild(slotsGrid);
+}
+
+timeToMinutes(time) {
+    const [hours, minutes] = time.split(':').map(Number);
+    return hours * 60 + minutes;
+}
+
+minutesToTime(minutes) {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}`;
+}
+
+selectTimeSlot(time) {
+    const startSelect = document.getElementById('startTime');
+    const endSelect = document.getElementById('endTime');
+    
+    if (startSelect) {
+        startSelect.value = time;
+    }
+    
+    if (endSelect) {
+        // Автоматически выбираем следующий слот как время окончания
+        const nextTime = this.getNextTimeSlot(time);
+        endSelect.value = nextTime;
+    }
+}
+async loadAllBookings() {
+    console.log("📅 Загрузка всех бронирований...");
+    try {
+        const response = await fetch('/api/bookings/');
+        if (response.ok) {
+            this.bookings = await response.json();
+            this.renderAllBookings();
+        } else {
+            console.error('❌ Ошибка загрузки бронирований:', response.status);
+            this.showNotification('Ошибка загрузки бронирований', 'error');
+            // Используем тестовые данные для демонстрации
+            this.bookings = [];
+            this.renderAllBookings();
+        }
+    } catch (error) {
+        console.error('Error loading bookings:', error);
+        this.showNotification('Ошибка сети', 'error');
+        this.bookings = [];
+        this.renderAllBookings();
+    }
+}
+getNextTimeSlot(time) {
+    const minutes = this.timeToMinutes(time);
+    const nextMinutes = minutes + 30;
+    return this.minutesToTime(nextMinutes);
+}
+renderTimeSlots(bookings) {
+    const slots = [];
+    const timeSlots = this.generateTimeSlots();
+    
+    timeSlots.forEach(slot => {
+        const isBooked = bookings.some(booking => 
+            slot.time >= booking.startTime && slot.time < booking.endTime
+        );
+        
+        const slotClass = isBooked ? 'slot booked' : 'slot available';
+        const slotText = isBooked ? 'Занято' : 'Свободно';
+        
+        slots.push(`
+            <div class="${slotClass}" data-time="${slot.time}">
+                ${slot.display} - ${slotText}
+            </div>
+        `);
+    });
+    
+    return slots.join('');
+}
+generateTimeSlots() {
+    const slots = [];
+    for (let hour = 9; hour <= 18; hour++) {
+        for (let minute of ['00', '30']) {
+            const time = `${hour.toString().padStart(2, '0')}:${minute}`;
+            const display = `${hour}:${minute}`;
+            slots.push({ time, display });
+        }
+    }
+    return slots;
+}
+  getRoleLabel(role) {
+    const labels = {
+      'user': 'Пользователь',
+      'manager': 'Менеджер',
+      'admin': 'Администратор'
+    };
+    return labels[role] || role;
+  }
+
+  async loginUser(email, password) {
+    try {
+      const response = await fetch('/api/users/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+      });
+
+      if (response.ok) {
+        const user = await response.json();
+        this.currentUser = user;
+        localStorage.setItem('soveshaika_user', JSON.stringify(user));
+        this.updateUserDisplay();
+        await this.loadRooms();
+        this.switchView('home');
+        showNotification(`Вход выполнен как ${user.name}`, 'success');
+      } else {
+        const error = await response.json();
+        showNotification(error.detail || 'Ошибка входа', 'error');
+      }
+    } catch (error) {
+      showNotification('Ошибка сети при входе', 'error');
+    }
+  }
+
+  async switchUser(userId) {
+    console.log(`👤 Переключение на пользователя: ${userId}`);
+    
+    // Находим пользователя
+    const user = this.users.find(u => u.id === userId);
+    if (!user) {
+        this.showNotification('Пользователь не найден', 'error');
+        return;
+    }
+    
+    try {
+        // Пробуем стандартный пароль
+        const response = await fetch('/api/users/login', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ 
+                email: user.email, 
+                password: 'password123' // Стандартный пароль
+            })
+        });
+        
+        if (response.ok) {
+            const userData = await response.json();
+            this.currentUser = userData;
+            localStorage.setItem('soveshaika_user', JSON.stringify(userData));
+            this.updateUI();
+            this.showNotification(`Вы вошли как ${userData.name}`, 'success');
+            
+            // Обновляем профиль
+            this.updateProfile();
+            
+            // Возвращаемся на главную
+            this.switchView('home');
+        } else {
+            // Если стандартный пароль не подошел, пробуем вход через форму
+            this.showNotification('Используйте форму входа', 'info');
+            this.switchView('auth');
+        }
+    } catch (error) {
+        console.error('Ошибка переключения пользователя:', error);
+        this.showNotification('Ошибка сети', 'error');
+    }
+}
+
+  switchView(viewName) {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+
+    const viewElement = document.getElementById(viewName);
+    const navButton = document.querySelector(`[data-view="${viewName}"]`);
+
+    if (viewElement) viewElement.classList.add('active');
+    if (navButton) navButton.classList.add('active');
+  }
+
+  updateUserDisplay() {
+    if (this.currentUser) {
+      document.querySelector('.user-name').textContent = this.currentUser.name;
+      
+      const adminBtn = document.querySelector('[data-view="admin"]');
+      if (adminBtn) {
+        adminBtn.style.display = this.currentUser.role === 'admin' ? 'inline-block' : 'none';
+      }
+    }
+  }
+
+  logout() {
+    this.currentUser = null;
+    localStorage.removeItem('soveshaika_user');
+    this.showAuthView();
+    showNotification('Вы вышли из системы', 'info');
+  }
+
+  updateProfile() {
+    console.log("👤 Обновление профиля...");
+    
+    if (!this.currentUser) {
+        console.error('❌ Нет текущего пользователя');
+        this.showNotification('Пользователь не авторизован', 'error');
+        return;
+    }
+    
+    console.log('📊 Текущий пользователь:', this.currentUser);
+    
+    // Обновляем информацию о текущем пользователе
+    const displayName = document.getElementById('displayName');
+    const displayEmail = document.getElementById('displayEmail');
+    const displayRole = document.getElementById('displayRole');
+    
+    if (displayName) {
+        displayName.textContent = this.currentUser.name || `${this.currentUser.firstName} ${this.currentUser.lastName}`;
+        console.log('✅ Имя установлено:', displayName.textContent);
+    }
+    
+    if (displayEmail) {
+        displayEmail.textContent = this.currentUser.email || '';
+        console.log('✅ Email установлен:', displayEmail.textContent);
+    }
+    
+    if (displayRole) {
+        displayRole.textContent = this.getRoleLabel(this.currentUser.role) || 'Пользователь';
+        console.log('✅ Роль установлена:', displayRole.textContent);
+    }
+    
+    // Рендерим список пользователей
+    this.renderProfileUsers();
+}
+
+renderProfileUsers() {
+    const container = document.getElementById('usersList');
+    if (!container) {
+        console.error('❌ Элемент usersList не найден');
+        return;
+    }
+    
+    if (!this.users || this.users.length === 0) {
+        console.log('📝 Пользователи не загружены, загружаем...');
+        this.loadAuthUsers().then(() => {
+            this.renderProfileUsers(); // Повторно вызываем после загрузки
+        });
+        return;
+    }
+    
+    console.log(`👥 Отрисовка ${this.users.length} пользователей для профиля`);
+    container.innerHTML = '';
+    
+    this.users.forEach(user => {
+        const isCurrent = this.currentUser && user.id === this.currentUser.id;
+        const userName = user.name || `${user.firstName || ''} ${user.lastName || ''}`.trim();
+        
+        const userElement = document.createElement('div');
+        userElement.className = `user-item ${isCurrent ? 'active' : ''}`;
+        userElement.innerHTML = `
+            <div class="user-item-info">
+                <div class="user-item-name">${userName}</div>
+                <div class="user-item-email">${user.email || ''}</div>
+                <div class="user-item-role">${this.getRoleLabel(user.role)}</div>
+            </div>
+            ${!isCurrent ? `
+                <button class="btn btn-primary btn-small switch-user-btn" data-user-id="${user.id}">
+                    Выбрать
+                </button>
+            ` : `
+                <span class="current-badge">Текущий</span>
+            `}
+        `;
+        container.appendChild(userElement);
+    });
+    
+    // Добавляем обработчики для кнопок выбора пользователя
+    container.querySelectorAll('.switch-user-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const userId = e.target.dataset.userId;
+            this.switchUser(userId);
+        });
+    });
+}
+
+  switchAuthMode(mode) {
+    document.getElementById('loginForm').classList.toggle('active', mode === 'login');
+    document.getElementById('registerForm').classList.toggle('active', mode === 'register');
+    
+    // При переключении на логин показываем список пользователей по умолчанию
+    if (mode === 'login') {
+      this.switchLoginMode('list');
+    }
+  }
+
+  switchLoginMode(mode) {
+    document.querySelectorAll('.auth-tab-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelectorAll('.auth-login-mode').forEach(m => m.classList.remove('active'));
+    
+    if (mode === 'list') {
+      document.querySelectorAll('.auth-tab-btn')[0].classList.add('active');
+      document.getElementById('loginList').classList.add('active');
+    } else {
+      document.querySelectorAll('.auth-tab-btn')[1].classList.add('active');
+      document.getElementById('loginPasswordForm').classList.add('active'); // Исправленный ID
+    }
+  }
+
+  async passwordLogin() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value.trim();
+
+    if (!email || !password) {
+      showNotification('Заполните email и пароль', 'error');
+      return;
+    }
+
+    const result = await loginWithPassword(email, password);
+    if (result.success) {
+      this.currentUser = result.user;
+      this.updateUserDisplay();
+      document.getElementById('loginEmail').value = '';
+      document.getElementById('loginPassword').value = '';
+      
+      await this.loadRooms();
+      this.switchView('home');
+      showNotification(`Вход выполнен как ${result.user.name}`, 'success');
+    } else {
+      showNotification(result.message, 'error');
+    }
+  }
+
+  async registerUser() {
+    const firstName = document.getElementById('registerFirstName').value.trim();
+    const lastName = document.getElementById('registerLastName').value.trim();
+    const email = document.getElementById('registerEmail').value.trim();
+    const password = document.getElementById('registerPassword').value.trim();
+
+    if (!firstName || !lastName || !email || !password) {
+      showNotification('Заполните все поля', 'error');
+      return;
+    }
+
+    if (!email.includes('@')) {
+      showNotification('Введите корректный email', 'error');
+      return;
+    }
+
+    if (password.length < 4) {
+      showNotification('Пароль должен содержать минимум 4 символа', 'error');
+      return;
+    }
+
+    const result = await createUser(firstName, lastName, email, password);
+    if (result.success) {
+      this.currentUser = result.user;
+      this.updateUserDisplay();
+      
+      // Очищаем форму
+      document.getElementById('registerFirstName').value = '';
+      document.getElementById('registerLastName').value = '';
+      document.getElementById('registerEmail').value = '';
+      document.getElementById('registerPassword').value = '';
+      
+      // Переключаемся на домашнюю страницу
+      await this.loadRooms();
+      this.switchView('home');
+      showNotification(`Добро пожаловать, ${firstName}!`, 'success');
+    } else {
+      showNotification(result.message, 'error');
+    }
+  }
+  updateUI() {
+    if (this.currentUser) {
+        // Обновляем имя пользователя
+        const userNameElement = document.querySelector('.user-name');
+        if (userNameElement) {
+            userNameElement.textContent = this.currentUser.name;
+        }
+
+        // Показываем/скрываем кнопку администратора
+        const adminBtn = document.querySelector('[data-view="admin"]');
+        if (adminBtn) {
+            if (this.currentUser.role === 'admin') {
+                adminBtn.style.display = 'inline-block';
+            } else {
+                adminBtn.style.display = 'none';
+            }
+        }
+
+        // Обновляем профиль
+        if (document.getElementById('displayName')) {
+            document.getElementById('displayName').textContent = this.currentUser.name;
+            document.getElementById('displayEmail').textContent = this.currentUser.email;
+            document.getElementById('displayRole').textContent = this.getRoleLabel(this.currentUser.role);
+        }
+    }
+}
+
+getRoleLabel(role) {
+    const labels = {
+        'user': 'Пользователь',
+        'manager': 'Менеджер', 
+        'admin': 'Администратор'
+    };
+    return labels[role] || role;
+}
+
+switchView(viewName) {
+    console.log(`🔄 Переключение на вид: ${viewName}`);
+    
+    // Скрыть все views
+    document.querySelectorAll('.view').forEach(view => {
+        view.classList.remove('active');
+    });
+
+    // Показать выбранный view
+    const viewElement = document.getElementById(viewName);
+    if (viewElement) {
+        viewElement.classList.add('active');
+    }
+
+    // Обновить активную кнопку навигации
+    document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.view === viewName) {
+            btn.classList.add('active');
+        }
+    });
+
+    // Загрузить данные для view
+    switch (viewName) {
+        case 'dashboard':
+            this.updateDashboard();
+            break;
+        case 'booking':
+            this.updateBookingForm();
+            break;
+        case 'profile':
+            this.updateProfile();
+            break;
+        case 'admin':
+            if (this.currentUser?.role === 'admin') {
+                this.updateAdminPanel();
+            } else {
+                this.showNotification('Доступ запрещен', 'error');
+                this.switchView('home');
+            }
+            break;
+    }
+}
+
+updateAdminPanel() {
+    console.log("🛠 Инициализация админ-панели");
+    
+    // Загружаем данные для админки
+    this.loadRoomsForAdmin();
+    this.loadAccessList();
+    this.loadAllBookings();
+    
+    // Устанавливаем активную вкладку "Комнаты"
+    this.switchTab('rooms');
+}
+
+switchTab(tabName) {
+    console.log(`🔄 Переключение на вкладку: ${tabName}`);
+    
+    // Обновляем активные вкладки
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.remove('active');
+        if (btn.dataset.tab === tabName) {
+            btn.classList.add('active');
+        }
+    });
+
+    document.querySelectorAll('.tab-content').forEach(content => {
+        content.classList.remove('active');
+        if (content.id === `${tabName}-tab`) {
+            content.classList.add('active');
+            
+            // Загружаем данные для вкладки
+            switch(tabName) {
+                case 'rooms':
+                    this.loadRoomsForAdmin();
+                    break;
+                case 'access':
+                    this.loadAccessList();
+                    break;
+                case 'bookings':
+                    this.loadAllBookings();
+                    break;
+            }
+        }
+    });
+}
+}
+
+window.app = new SoveshaikaApp();
